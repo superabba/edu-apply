@@ -7,66 +7,49 @@ let courses = [];  // edu_courses
 // ===== 저장 위치 =====
 // 데이터를 읽고 쓰는 곳은 이 네 함수뿐이다.
 // 저장 위치를 바꿀 때는 이 부분만 고치면 된다.
-const KEY_APPS = 'edu_apps';
-const KEY_COURSES = 'edu_courses';
+// 4회차 : Supabase DB (표 edu_apps, edu_courses). 주소·키는 config.js
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-function seedData() {
-  const now = Date.now();
-  const at = i => now - (10 - i) * 60000; // 신청 순서 기록용 (표시에는 안 씀)
-  courses = [
-    { course: '정보보안 기본', capacity: 5 },
-    { course: '생성형 AI 실무', capacity: 5 },
-    { course: '보고서 작성 기초', capacity: 5 },
-  ];
-  apps = [
-    { id: 1, course: '정보보안 기본', date: '2026-09-24', hours: 3, name: '김가상', team: '기획팀', status: '이수', createdAt: at(1) },
-    { id: 2, course: '정보보안 기본', date: '2026-09-24', hours: 3, name: '이가상', team: '안전팀', status: '이수', createdAt: at(2) },
-    { id: 3, course: '정보보안 기본', date: '2026-09-24', hours: 3, name: '박가상', team: '운영팀', status: '취소', createdAt: at(3) },
-    { id: 4, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '김가상', team: '기획팀', status: '신청', createdAt: at(4) },
-    { id: 5, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '최가상', team: '안전팀', status: '신청', createdAt: at(5) },
-    { id: 6, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '정가상', team: '운영팀', status: '신청', createdAt: at(6) },
-    { id: 7, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '한가상', team: '기획팀', status: '신청', createdAt: at(7) },
-    { id: 8, course: '보고서 작성 기초', date: '2026-11-05', hours: 4, name: '오가상', team: '운영팀', status: '신청', createdAt: at(8) },
-  ];
-  saveAll();
+// DB 오류를 화면에 보여 줄 한국어 문구로 바꿔 던진다 (F-11)
+function checkError(error) {
+  if (!error) return;
+  if (error.code === '23505') throw new Error('중복 신청 : 이미 신청한 과정입니다.');
+  if (error.code === '42501') throw new Error('허용되지 않은 변경입니다.');
+  throw new Error(error.message); // 트리거 문구(정원 마감·중복 신청·상태 변경 불가)는 그대로
 }
 
-function saveAll() {
-  localStorage.setItem(KEY_APPS, JSON.stringify(apps));
-  localStorage.setItem(KEY_COURSES, JSON.stringify(courses));
-}
-
-// 전체 불러오기
+// 전체 불러오기 (created_at → createdAt 으로 바꿔 담는다)
 async function loadData() {
-  try {
-    apps = JSON.parse(localStorage.getItem(KEY_APPS)) || [];
-    courses = JSON.parse(localStorage.getItem(KEY_COURSES)) || [];
-  } catch (e) {
-    apps = []; courses = [];
-  }
-  if (apps.length === 0) seedData();
+  const [a, c] = await Promise.all([
+    db.from('edu_apps').select('*'),
+    db.from('edu_courses').select('*'),
+  ]);
+  checkError(a.error);
+  checkError(c.error);
+  apps = a.data.map(({ created_at, ...rest }) => ({ ...rest, createdAt: created_at }));
+  courses = c.data;
 }
 
-// 신청 1건 저장 (과정이 처음이면 정원 5명으로 함께 등록)
+// 신청 1건 저장 (status는 DB가 '신청'으로 넣고, 처음 보는 과정은 DB가 정원 5명으로 등록)
 async function insertApp(app) {
-  const nextId = apps.reduce((m, a) => Math.max(m, a.id), 0) + 1;
-  apps.push({ ...app, id: nextId, createdAt: Date.now() });
-  if (!courses.some(c => c.course === app.course)) courses.push({ course: app.course, capacity: DEFAULT_CAPACITY });
-  saveAll();
+  const { course, date, hours, name, team } = app;
+  const { error } = await db.from('edu_apps').insert({ course, date, hours, name, team });
+  checkError(error);
+  await loadData();
 }
 
 // 상태 변경 저장
 async function updateStatus(id, newStatus) {
-  const app = apps.find(a => a.id === id);
-  if (app) app.status = newStatus;
-  saveAll();
+  const { error } = await db.from('edu_apps').update({ status: newStatus }).eq('id', id);
+  checkError(error);
+  await loadData();
 }
 
 // 정원 변경 저장
 async function updateCapacity(course, capacity) {
-  const c = courses.find(x => x.course === course);
-  if (c) c.capacity = capacity; else courses.push({ course, capacity });
-  saveAll();
+  const { error } = await db.from('edu_courses').update({ capacity }).eq('course', course);
+  checkError(error);
+  await loadData();
 }
 // ===== 저장 위치 끝 =====
 
@@ -165,6 +148,18 @@ async function setCapacity(course, value) {
   }
   showMessage(`「${course}」 정원을 ${cap}명으로 바꿨습니다.`, 'ok');
   renderAll();
+}
+
+// ---- F-10 새로 불러오기 ----
+async function reloadData() {
+  try {
+    await loadData();
+  } catch (e) {
+    showMessage('데이터를 불러오지 못했습니다 : ' + e.message, 'error');
+    return;
+  }
+  renderAll();
+  showMessage('최신 목록을 불러왔습니다.', 'ok');
 }
 
 // ---- F-07 CSV 다운로드 ----
@@ -280,6 +275,7 @@ function fillCourseInfo() {
 document.addEventListener('DOMContentLoaded', async () => {
   $('applyForm').addEventListener('submit', e => { e.preventDefault(); addApplication(); });
   $('courseInput').addEventListener('change', fillCourseInfo);
+  $('reloadBtn').addEventListener('click', reloadData);
   try {
     await loadData();
   } catch (e) {
